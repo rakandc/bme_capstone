@@ -6,7 +6,7 @@ import streamlit as st
 
 from models import Measurement, MeasurementResults
 
-st.set_page_config(page_title="Actuator Simulator")
+st.set_page_config(page_title="Actuator Simulator", layout="wide")
 
 st.title("Measurement Setup")
 
@@ -42,13 +42,21 @@ x_axis = np.linspace(0, max_travel_mm, 200)
 layout_col_pos, layout_col_plot = st.columns([1, 2], gap="large")
 
 with layout_col_pos:
-    st.title("Actuator Position Monitor")
-
     if "actuator_position" not in st.session_state:
         st.session_state.actuator_position = 0.0
 
     current_position = st.session_state.actuator_position
-    st.metric("Current Position", f"{current_position:.1f} mm")
+
+    if "gradient_state" not in st.session_state:
+        st.session_state.gradient_state = {
+            "running": False,
+            "position": current_position,
+            "history": [],
+            "step": 0,
+        }
+
+    if "half_search_state" not in st.session_state:
+        st.session_state.half_search_state = None
 
     fig = go.Figure()
     fig.add_trace(
@@ -69,14 +77,59 @@ with layout_col_pos:
     )
     fig.update_layout(
         yaxis_title="Position (mm)",
+        title="Actuator Position Monitor",
+        title_x=0.5,
+        title_y=0.94,
         xaxis_visible=False,
         xaxis_showticklabels=False,
         template="plotly_white",
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=60, b=40),
         height=500,
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
+def trigger_gradient_start():
+    gradient_state = st.session_state.gradient_state
+    current_position = st.session_state.actuator_position
+    gradient_state["running"] = True
+    gradient_state["position"] = current_position
+    gradient_state["history"] = []
+    gradient_state["step"] = 0
+    st.session_state.half_search_state = None
+    st.session_state.pop("gradient_results", None)
+    st.session_state.pop("half_results", None)
+    st.rerun()
+
+
+def trigger_half_search_start():
+    if st.session_state.gradient_state["running"]:
+        return
+    center_ref = st.session_state.actuator_position
+    st.session_state.half_search_state = {
+        "running": True,
+        "side": "left",
+        "center": center_ref,
+        "left": {
+            "low": 0.0,
+            "high": center_ref,
+            "history": [],
+            "result": None,
+            "position_sequence": [],
+            "pending_mid": None,
+        },
+        "right": {
+            "low": center_ref,
+            "high": max_travel_mm,
+            "history": [],
+            "result": None,
+            "position_sequence": [],
+            "pending_mid": None,
+        },
+        "step": 0,
+    }
+    st.session_state.pop("half_results", None)
+    st.rerun()
 
 measurement_data = st.session_state.get("measurement")
 beam_center_mm = max_travel_mm / 2.0
@@ -132,17 +185,11 @@ st.session_state["dose_profile"] = MeasurementResults(
     right_half_point=right_half_point,
     fwhm_mm=float(fwhm_mm),
 ).dict()
-st.caption(
-    f"Estimated local dose rate: {current_dose:.4f} Gy/s "
-    f"(Gaussian profile centered at {beam_center_mm} mm)"
-)
-
 next_rerun_delay: float | None = None
 
 with layout_col_plot:
-    dose_plot_placeholder = st.empty()
+    graph_placeholder = st.empty()
 
-    st.subheader("Dose Profile & Searches")
     dose_fig = go.Figure()
     dose_fig.add_trace(
         go.Scatter(
@@ -166,33 +213,16 @@ with layout_col_plot:
         annotation_position="bottom right",
     )
 
-    st.subheader("Gradient Ascent Localization")
     learning_rate = 5
     max_steps = 200
     grad_tolerance = 1e-3
     frame_delay = 0.05
-    binary_tolerance = 1e-3
+    binary_tolerance = 1e-2
     position_tolerance = 0.05
     binary_frame_delay = 0.4
 
-    if "gradient_state" not in st.session_state:
-        st.session_state.gradient_state = {
-            "running": False,
-            "position": current_position,
-            "history": [],
-            "step": 0,
-        }
-
     gradient_state = st.session_state.gradient_state
-    start_clicked = st.button("Run Gradient Ascent Search")
-
-    if start_clicked:
-        gradient_state["running"] = True
-        gradient_state["position"] = current_position
-        gradient_state["history"] = []
-        gradient_state["step"] = 0
-        st.session_state.pop("gradient_results", None)
-        st.rerun()
+    half_state = st.session_state.half_search_state
 
     latest_grad = None
     latest_dose = None
@@ -222,17 +252,6 @@ with layout_col_plot:
             )
         )
 
-    status_box = st.empty()
-    if gradient_state["history"]:
-        last_pos, last_dose = gradient_state["history"][-1]
-        display_grad = latest_grad if latest_grad is not None else gaussian_grad(last_pos)
-        status_box.info(
-            f"Step {gradient_state['step']}: x = {last_pos:.2f} mm | "
-            f"dose = {last_dose:.4f} Gy/s | grad = {display_grad:.4e}"
-        )
-    else:
-        status_box.info("Click the button to start the gradient ascent search.")
-
     if gradient_state["running"] and latest_grad is not None:
         converged = abs(latest_grad) < grad_tolerance or gradient_state["step"] >= max_steps
         if converged:
@@ -260,50 +279,6 @@ with layout_col_plot:
             st.session_state.actuator_position = next_position
             next_rerun_delay = frame_delay
 
-    if "gradient_results" in st.session_state:
-        results = st.session_state["gradient_results"]
-        st.success(
-            f"Gradient ascent converged at {results['center_mm']:.2f} mm with dose "
-            f"{results['max_dose']:.4f} Gy/s."
-        )
-        st.write(
-            f"Half-dose (Dmax/2 = {results['half_dose']:.4f} Gy/s) points: "
-            f"left = {results['left_half']:.2f} mm, right = {results['right_half']:.2f} mm."
-        )
-
-    st.subheader("Half-Dose Binary Search")
-
-    if "half_search_state" not in st.session_state:
-        st.session_state.half_search_state = None
-
-    half_button = st.button(
-        "Find Half-Dose Points",
-        disabled=gradient_state.get("running", False),
-    )
-
-    if half_button:
-        center_ref = st.session_state.actuator_position
-        st.session_state.half_search_state = {
-            "running": True,
-            "side": "left",
-            "center": center_ref,
-            "left": {
-                "low": 0.0,
-                "high": center_ref,
-                "history": [],
-                "result": None,
-            },
-            "right": {
-                "low": center_ref,
-                "high": max_travel_mm,
-                "history": [],
-                "result": None,
-            },
-            "step": 0,
-        }
-        st.session_state.pop("half_results", None)
-        st.rerun()
-
     half_state = st.session_state.half_search_state
 
     def append_history_trace(segment, label, color):
@@ -318,48 +293,79 @@ with layout_col_plot:
                 )
             )
 
-    binary_status = st.empty()
+    def ensure_sequence(start: float, end: float) -> list[float]:
+        direction = 1 if end >= start else -1
+        path = np.arange(start, end, direction * 0.5)
+        if path.size == 0 or path[-1] != end:
+            path = np.append(path, end)
+        return path.tolist()
 
     def binary_search_step(segment, is_left: bool):
+        if "position_sequence" in segment and segment["position_sequence"]:
+            next_position = segment["position_sequence"].pop(0)
+            st.session_state.actuator_position = float(np.clip(next_position, 0.0, max_travel_mm))
+            return False, st.session_state.actuator_position, gaussian(st.session_state.actuator_position)
+
+        if segment.get("pending_mid") is not None:
+            mid = segment.pop("pending_mid")
+            mid_dose = gaussian(mid)
+            segment["history"].append((mid, mid_dose))
+
+            completed = False
+            if abs(mid_dose - half_value) < binary_tolerance or abs(segment["high"] - segment["low"]) < position_tolerance:
+                segment["result"] = mid
+                completed = True
+                target = mid
+            else:
+                if is_left:
+                    if mid_dose > half_value:
+                        segment["high"] = mid
+                    else:
+                        segment["low"] = mid
+                else:
+                    if mid_dose > half_value:
+                        segment["low"] = mid
+                    else:
+                        segment["high"] = mid
+                target = (segment["low"] + segment["high"]) / 2.0
+
+            if completed:
+                return True, mid, mid_dose
+
+            segment["pending_mid"] = None
+            current_position = st.session_state.actuator_position
+            segment["position_sequence"] = ensure_sequence(current_position, target)
+            segment["pending_mid"] = target
+
+            if segment["position_sequence"]:
+                next_position = segment["position_sequence"].pop(0)
+                st.session_state.actuator_position = float(np.clip(next_position, 0.0, max_travel_mm))
+                return False, st.session_state.actuator_position, gaussian(st.session_state.actuator_position)
+            else:
+                return False, target, gaussian(target)
+
         low = segment["low"]
         high = segment["high"]
         mid = (low + high) / 2.0
-        mid_dose = gaussian(mid)
-        segment["history"].append((mid, mid_dose))
-        segment["low"] = low
-        segment["high"] = high
+        segment["pending_mid"] = mid
+        current_position = st.session_state.actuator_position
+        segment["position_sequence"] = ensure_sequence(current_position, mid)
 
-        completed = False
-        if abs(mid_dose - half_value) < binary_tolerance or abs(high - low) < position_tolerance:
-            segment["result"] = mid
-            completed = True
-        else:
-            if is_left:
-                if mid_dose > half_value:
-                    segment["high"] = mid
-                else:
-                    segment["low"] = mid
-            else:
-                if mid_dose > half_value:
-                    segment["low"] = mid
-                else:
-                    segment["high"] = mid
-        return completed, mid, mid_dose
+        if segment["position_sequence"]:
+            next_position = segment["position_sequence"].pop(0)
+            st.session_state.actuator_position = float(np.clip(next_position, 0.0, max_travel_mm))
+            return False, st.session_state.actuator_position, gaussian(st.session_state.actuator_position)
+
+        return False, mid, gaussian(mid)
 
     if half_state and half_state.get("running"):
         current_side = half_state["side"]
         if current_side == "left":
             done, mid, mid_dose = binary_search_step(half_state["left"], True)
-            binary_status.info(
-                f"Left search step {len(half_state['left']['history'])}: x = {mid:.2f} mm | dose = {mid_dose:.4f} Gy/s"
-            )
             if done:
                 half_state["side"] = "right"
         else:
             done, mid, mid_dose = binary_search_step(half_state["right"], False)
-            binary_status.info(
-                f"Right search step {len(half_state['right']['history'])}: x = {mid:.2f} mm | dose = {mid_dose:.4f} Gy/s"
-            )
             if done:
                 half_state["running"] = False
                 left_res = half_state["left"]["result"]
@@ -378,10 +384,6 @@ with layout_col_plot:
 
     half_results = st.session_state.get("half_results")
     if half_results:
-        binary_status.success(
-            f"Half-dose points found: left = {half_results['left']:.2f} mm, "
-            f"right = {half_results['right']:.2f} mm."
-        )
         dose_fig.add_trace(
             go.Scatter(
                 x=[half_results["left"], half_results["right"]],
@@ -395,11 +397,70 @@ with layout_col_plot:
     dose_fig.update_layout(
         xaxis_title="Position (mm)",
         yaxis_title="Dose Rate (Gy/s)",
+        title="Dose Profile & Searches",
+        title_x=0.5,
         template="plotly_white",
-        margin=dict(l=40, r=40, t=40, b=40),
+        margin=dict(l=40, r=40, t=60, b=40),
     )
 
-    dose_plot_placeholder.plotly_chart(dose_fig, use_container_width=True)
+    graph_placeholder.plotly_chart(dose_fig, use_container_width=True)
+
+st.divider()
+
+controls_container = st.container()
+status_container = st.container()
+
+with controls_container:
+    control_cols = st.columns(2)
+    control_cols[0].button(
+        "Run Gradient Ascent",
+        on_click=trigger_gradient_start,
+        disabled=gradient_state["running"],
+        use_container_width=True,
+    )
+    control_cols[1].button(
+        "Find Half-Dose Points",
+        on_click=trigger_half_search_start,
+        disabled=(
+            gradient_state["running"]
+            or (half_state is not None and half_state.get("running") is True)
+        ),
+        use_container_width=True,
+    )
+
+status_payload = {
+    "actuator_position_mm": round(st.session_state.actuator_position, 3),
+    "gradient": {
+        "running": gradient_state["running"],
+        "step": gradient_state["step"],
+        "current_estimate_mm": round(current_iter_position, 3)
+        if current_iter_position is not None
+        else None,
+        "current_dose_Gy_s": round(latest_dose, 4) if latest_dose is not None else None,
+        "current_gradient": round(latest_grad, 6) if latest_grad is not None else None,
+        "result": st.session_state.get("gradient_results"),
+    },
+    "half_search": {
+        "running": half_state["running"] if half_state else False,
+        "side": half_state["side"] if half_state else None,
+        "left_bounds_mm": [
+            round(half_state["left"]["low"], 3),
+            round(half_state["left"]["high"], 3),
+        ]
+        if half_state
+        else None,
+        "right_bounds_mm": [
+            round(half_state["right"]["low"], 3),
+            round(half_state["right"]["high"], 3),
+        ]
+        if half_state
+        else None,
+        "result": st.session_state.get("half_results"),
+    },
+}
+
+with status_container:
+    st.json(status_payload, expanded=False)
 
 if next_rerun_delay is not None:
     time.sleep(next_rerun_delay)
