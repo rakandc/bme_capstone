@@ -159,7 +159,7 @@ def render_actuator_plot(position: float) -> None:
         margin=dict(l=40, r=40, t=60, b=40),
         height=500,
     )
-    actuator_plot_placeholder.plotly_chart(fig, use_container_width=True)
+    actuator_plot_placeholder.plotly_chart(fig, width="stretch", key="actuator_chart")
 
 
 def render_dose_plot(
@@ -263,7 +263,7 @@ def render_dose_plot(
         template="plotly_white",
         margin=dict(l=40, r=40, t=60, b=40),
     )
-    dose_plot_placeholder.plotly_chart(fig, use_container_width=True)
+    dose_plot_placeholder.plotly_chart(fig, width="stretch", key="dose_chart")
 
 
 def animate_move(
@@ -400,7 +400,7 @@ with controls_container:
         "Run Gradient Ascent",
         on_click=run_gradient_animation,
         disabled=st.session_state.active_animation is not None,
-        use_container_width=True,
+        width="stretch",
     )
     control_cols[1].button(
         "Find Half-Dose Points",
@@ -409,7 +409,7 @@ with controls_container:
             st.session_state.active_animation is not None
             or not st.session_state.gradient_results
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
 status_payload = {
