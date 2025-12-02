@@ -159,7 +159,8 @@ def render_actuator_plot(position: float) -> None:
         margin=dict(l=40, r=40, t=60, b=40),
         height=500,
     )
-    actuator_plot_placeholder.plotly_chart(fig, width="stretch")
+    plot_key = f"actuator_chart_{st.session_state.active_animation}_{st.session_state.actuator_position:.3f}"
+    actuator_plot_placeholder.plotly_chart(fig, width="stretch", key=plot_key)
 
 
 def render_dose_plot(
@@ -263,7 +264,13 @@ def render_dose_plot(
         template="plotly_white",
         margin=dict(l=40, r=40, t=60, b=40),
     )
-    dose_plot_placeholder.plotly_chart(fig, width="stretch")
+    plot_key = (
+        f"dose_chart_{st.session_state.active_animation}_"
+        f"{st.session_state.actuator_position:.3f}_"
+        f"{half_results.get('left') if half_results else 'x'}_"
+        f"{half_results.get('right') if half_results else 'x'}"
+    )
+    dose_plot_placeholder.plotly_chart(fig, width="stretch", key=plot_key)
 
 
 def animate_move(
