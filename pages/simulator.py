@@ -118,7 +118,7 @@ st.session_state["dose_profile"] = MeasurementResults(
     left_half_point=left_half_point,
     right_half_point=right_half_point,
     fwhm_mm=float(fwhm_mm),
-).dict()
+).model_dump()
 
 learning_rate = 5
 max_steps = 200
@@ -159,7 +159,10 @@ def render_actuator_plot(position: float) -> None:
         margin=dict(l=40, r=40, t=60, b=40),
         height=500,
     )
-    plot_key = f"actuator_chart_{st.session_state.active_animation}_{st.session_state.actuator_position:.3f}"
+    plot_key = (
+        f"actuator_chart_{st.session_state.active_animation}_"
+        f"{time.time_ns()}"
+    )
     actuator_plot_placeholder.plotly_chart(fig, width="stretch", key=plot_key)
 
 
@@ -266,9 +269,7 @@ def render_dose_plot(
     )
     plot_key = (
         f"dose_chart_{st.session_state.active_animation}_"
-        f"{st.session_state.actuator_position:.3f}_"
-        f"{half_results.get('left') if half_results else 'x'}_"
-        f"{half_results.get('right') if half_results else 'x'}"
+        f"{time.time_ns()}"
     )
     dose_plot_placeholder.plotly_chart(fig, width="stretch", key=plot_key)
 
